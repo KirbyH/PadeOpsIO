@@ -4,6 +4,7 @@ import re
 import warnings
 import glob
 from scipy.io import savemat
+import matplotlib.pyplot as plt
 
 try: 
     import f90nml
@@ -22,6 +23,7 @@ class BudgetIO():
     """
 
     key = budgetkey.get_key()
+    key_xy = budgetkey.get_key_xy()
 
     def __init__(self, dir_name, **kwargs): 
         """
@@ -112,6 +114,7 @@ class BudgetIO():
                 print('Initialized BudgetIO at ' + dir_name + ' from .npz files. ')
 
         self.budget = {}  # empty dictionary
+        self.budget_xy = {}  # empty dictionary
 
         if 'read_budgets' in kwargs: 
             # if read_budgets passed in as keyword argument, read budgets on initialization
@@ -333,6 +336,18 @@ class BudgetIO():
             self.Ro = self.input_nml['physics']['ro']
         else: 
             self.Ro = np.Inf
+        if self.input_nml['physics']['usecoriolis']: 
+            self.latitude = self.input_nml['physics']['latitude']
+
+        if self.input_nml['physics']['isstratified']: 
+            self.Fr = self.input_nml['physics']['fr']
+        else: 
+            self.Fr = np.Inf
+
+        if self.input_nml['problem_input']['Tref']:
+            self.Tref = self.input_nml['problem_input']['Tref']
+        
+        
 
     
     def _load_grid(self, **kwargs): 
@@ -654,13 +669,15 @@ class BudgetIO():
                       'v':'vVel', 
                       'w':'wVel', 
                       'p':'prss', 
-                      'T':'potT'}  # add more? 
+                      'T':'potT',
+                      'kSGS':'kSGS',
+                      'nSGS':'nSGS'}  # add more? 
         
         # parse terms: 
-        if field_terms is None: 
+        if field_terms is None:
             terms = dict_match.keys()
             
-        else: 
+        else:
             terms = [t for t in field_terms if t in dict_match.keys()]
         
         # parse tidx
@@ -684,8 +701,77 @@ class BudgetIO():
         self.associate_field = True
             
         print('BudgetIO loaded fields {:s} at time: {:.06f}'.format(str(list(terms)), self.time))
+
+
+    def time_slices(self, field_terms=None, tidx=None, xlim=None, ylim=None, zlim=None): 
+        """
+        Reads instantaneous slices from fields from PadeOps output files into the self.field dictionary.
+        Each dictionary item is an array where the three dimensions are 2 spatial dimensions and time.
         
+        Parameters
+        ----------
+        field_terms (list or list of strings) : fields to use
+        tidx (list) : reads fields from the specified list of time ID. Default: self.unique_tidx
+        keys (fields in slice `sl`) : keys to slice into from the input slice `sl`
+        tidx (int) : time ID to read budgets from, see read_budgets(). Default None
+        xlim, ylim, zlim (tuple) : in physical domain coordinates, the slice limits. If an integer is given, then the 
+            dimension of the slice will be reduced by one. If None is given (default), then the entire domain extent is sliced. 
         
+        Returns
+        -------
+        slices (dict) : dictionary organized with all of the sliced fields, keyed by the budget name, and additional keys for
+            the slice domain 'x', 'y', 'z', 't'
+                
+        
+        """
+
+        if tidx is None:
+            tidx = self.unique_tidx()
+
+        slices = {}  # build from empty dict
+
+        # find slice indices
+        xid, yid, zid = self.get_xids(x=xlim, y=ylim, z=zlim, return_none=True, return_slice=True)
+        xLine = self.xLine
+        yLine = self.yLine
+        zLine = self.zLine    
+
+
+        dict_match = {'u':'uVel', 
+                      'v':'vVel', 
+                      'w':'wVel', 
+                      'p':'prss', 
+                      'T':'potT',
+                      'kSGS':'kSGS',
+                      'nSGS':'nSGS'}
+
+        
+        # parse terms: 
+        if field_terms is None:
+            terms = dict_match.keys()
+        else:
+            terms = [t for t in field_terms if t in dict_match.keys()]
+
+        # initialize temporary array 
+        for key in terms:
+            slices[key] = np.squeeze(np.zeros([xid.stop-xid.start,yid.stop-yid.start,zid.stop-zid.start,len(tidx)]))
+                
+        # iterate through list of time ids
+        for i in range(len(tidx)):
+            self.read_fields(tidx=tidx[i])
+
+            # iterate through field terms
+            for key in terms:
+                slices[key][:,:,i] = np.squeeze(self.field[key][xid, yid, zid])
+
+        # also save domain information
+        slices['x'] = xLine[xid]
+        slices['y'] = yLine[yid]
+        slices['z'] = zLine[zid]
+        slices['tidx'] = tidx
+        
+        return slices
+
     def clear_budgets(self): 
         """
         Clears any loaded budgets. 
@@ -754,9 +840,107 @@ class BudgetIO():
         
         if self.verbose and len(key_subset) > 0: 
             print("read_budgets: Successfully loaded budgets. ")
+
+    def read_budgets_xy(self, budget_terms='default', mmap=None, overwrite=False, tidx=None): 
+        """
+        Accompanying method to write_budgets. Reads budgets saved as .npz files 
+        
+        Arguments 
+        ---------
+        budget_terms : list of terms (see ._parse_budget_terms())
+        mmap : default None. Sets the memory-map settings in numpy.load(). Expects None, 'r+', 'r', 'w+', 'c'
+        overwrite (bool) : if True, re-loads budgets that have already been loaded. Default False; checks  
+            existing budgets before loading new ones. 
+        tidx (int) : if given, requests budget dumps at a specific time ID. Default None. This only affects
+            reading from PadeOps output files; .npz are limited to one saved tidx. 
+        """
+
+        if not self.associate_budgets: 
+           raise AttributeError("read_budgets(): No budgets linked. ")
+        
+        # we need to handle computed quantities differently... 
+        if any(t in ['uwake', 'vwake', 'wwake'] for t in budget_terms): 
+            self.calc_wake()
+            
+            if self.verbose: 
+                print("read_budgets: Successfully loaded wake budgets. ")
+
+
+        # parse budget_terms with the key
+        key_subset = self._parse_budget_xy_terms(budget_terms, include_wakes=False)
+        
+        if not overwrite:
+            remove_keys = [key for key in key_subset if key in self.budget.keys()]
+            if len(remove_keys) > 0 and self.verbose: 
+                print("read_budgets(): requested budgets that have already been loaded. \
+                    \n  Removed the following: {}. Pass overwrite=True to read budgets anyway.".format(remove_keys))
+            
+            # remove items that have already been loaded in  
+            key_subset = {key:key_subset[key] for key in key_subset if key not in self.budget.keys()}
+
+        if self.associate_padeops: 
+            self._read_budgets_xy_padeops(key_subset, tidx=tidx)  # this will not include wake budgets
+        
+        elif self.associate_npz: 
+            self._read_budgets_npz(key_subset, mmap=mmap)
+        
+        if self.verbose and len(key_subset) > 0: 
+            print("read_budgets: Successfully loaded budgets. ")
         
 
     def _read_budgets_padeops(self, key_subset, tidx): 
+        """
+        Uses a method similar to ReadVelocities_Budget() in PadeOpsViz to read and store full-field budget terms. 
+        """
+
+        budget4_components = [11, 22, 33, 13, 23]
+        
+        if tidx is None: 
+            tidx = self.budget_tidx
+            
+        elif tidx not in self.all_budget_tidx: 
+            # find the nearest that actually exists
+            tidx_arr = np.array(self.all_budget_tidx)
+            closest_tidx = tidx_arr[np.argmin(np.abs(tidx_arr-tidx))]
+            
+            print("Requested budget tidx={:d} could not be found. Using tidx={:d} instead.".format(tidx, closest_tidx))
+            tidx = closest_tidx 
+            
+        print(tidx)
+        # update self.time and self.tidx: 
+#         self.tidx = tidx
+        
+#         info_fname = self.dir_name + '/Run{:02d}_info_t{:06d}.out'.format(self.runid, self.tidx)
+#         self.info = np.genfromtxt(info_fname, dtype=None)
+#         self.time = self.info[0]
+
+        # these lines are almost verbatim from PadeOpsViz.py
+        for key in key_subset:
+            budget, term = BudgetIO.key[key]
+            if budget==4:
+                component = budget4_components[int(np.floor((term-1)/10))]
+
+                if term > 10:
+                    term = term % 10
+                    if term == 0:
+                        term = 10
+                searchstr =  self.dir_name + '/Run{:02d}_budget{:01d}_{:02d}_term{:02d}_t{:06d}_*.s3D'.format(self.runid, budget, component, term, tidx)
+                u_fname = glob.glob(searchstr)[0]  
+
+            else:
+                searchstr =  self.dir_name + '/Run{:02d}_budget{:01d}_term{:02d}_t{:06d}_*.s3D'.format(self.runid, budget, term, tidx)
+                u_fname = glob.glob(searchstr)[0]  
+            
+            self.budget_n = int(re.findall('.*_t\d+_n(\d+)', u_fname)[0])  # extract n from string
+            self.budget_tidx = tidx
+            
+            temp = np.fromfile(u_fname, dtype=np.dtype(np.float64), count=-1)
+            self.budget[key] = temp.reshape((self.nx,self.ny,self.nz), order='F')  # reshape into a 3D array
+
+        if self.verbose and len(key_subset) > 0: 
+            print('PadeOpsViz loaded the budget fields at time:' + '{:.06f}'.format(tidx))
+
+    def _read_budgets_xy_padeops(self, key_subset, tidx): 
         """
         Uses a method similar to ReadVelocities_Budget() in PadeOpsViz to read and store full-field budget terms. 
         """
@@ -773,25 +957,36 @@ class BudgetIO():
             tidx = closest_tidx 
             
         # update self.time and self.tidx: 
-#         self.tidx = tidx
+        #         self.tidx = tidx
         
-#         info_fname = self.dir_name + '/Run{:02d}_info_t{:06d}.out'.format(self.runid, self.tidx)
-#         self.info = np.genfromtxt(info_fname, dtype=None)
-#         self.time = self.info[0]
+        #         info_fname = self.dir_name + '/Run{:02d}_info_t{:06d}.out'.format(self.runid, self.tidx)
+        #         self.info = np.genfromtxt(info_fname, dtype=None)
+        #         self.time = self.info[0]
 
-        # these lines are almost verbatim from PadeOpsViz.py
-        for key in key_subset:
-            budget, term = BudgetIO.key[key]
+        for budget in key_subset:
+            if budget != 4:
+                searchstr =  self.dir_name + '/Run{:02d}_budget{:01d}_t{:06d}_*.stt'.format(self.runid, budget, tidx)
+                u_fname = glob.glob(searchstr)[0]  
             
-            searchstr =  self.dir_name + '/Run{:02d}_budget{:01d}_term{:02d}_t{:06d}_*.s3D'.format(self.runid, budget, term, tidx)
-            u_fname = glob.glob(searchstr)[0]  
+                self.budget_n = int(re.findall('.*_t\d+_n(\d+)', u_fname)[0])  # extract n from string
+                self.budget_tidx = tidx
             
-            self.budget_n = int(re.findall('.*_t\d+_n(\d+)', u_fname)[0])  # extract n from string
-            self.budget_tidx = tidx
+                temp = np.genfromtxt(u_fname, dtype=np.dtype(np.float64))
+                for key in key_subset[budget]:
+                    self.budget_xy[key] = temp[:,BudgetIO.key_xy[key][1]-1]  # reshape into a 3D array
+            elif budget == 4:
+                for component in key_subset[budget]:
+                    searchstr =  self.dir_name + '/Run{:02d}_budget{:01d}_{:02d}_t{:06d}*.stt'.format(self.runid, budget, component, tidx)
+                    u_fname = glob.glob(searchstr)[0]  
             
-            temp = np.fromfile(u_fname, dtype=np.dtype(np.float64), count=-1)
-            self.budget[key] = temp.reshape((self.nx,self.ny,self.nz), order='F')  # reshape into a 3D array
-
+                    self.budget_n = int(re.findall('.*_t\d+_n(\d+)', u_fname)[0])  # extract n from string
+                    self.budget_tidx = tidx
+            
+                    temp = np.genfromtxt(u_fname, dtype=np.dtype(np.float64))
+                    
+                    for key in key_subset[budget][component]:
+                        self.budget_xy[key] = temp[:,key_subset[budget][component][key][1]-1]  
+                    
         if self.verbose and len(key_subset) > 0: 
             print('PadeOpsViz loaded the budget fields at time:' + '{:.06f}'.format(tidx))
 
@@ -854,10 +1049,10 @@ class BudgetIO():
         valid_keys = [t for t in budget_terms if t in existing_keys]
         missing_keys = [t for t in budget_terms if t not in existing_keys and t in BudgetIO.key]
         invalid_terms = [t for t in budget_terms if t not in BudgetIO.key and t not in BudgetIO.key.inverse]
-
+        
         valid_tup = [tup for tup in budget_terms if tup in existing_tup]  # existing tuples
         missing_tup = [tup for tup in budget_terms if tup not in existing_tup and tup in BudgetIO.key.inverse]
-
+        
         # now combine existing valid keys and valid tuples, removing any duplicates
 
         valid_terms = set(valid_keys + [BudgetIO.key.inverse[tup][0] for tup in valid_tup])  # combine and remove duplicates
@@ -878,6 +1073,119 @@ class BudgetIO():
             warnings.warn('_parse_budget_terms(): The following budget terms were requested but the following do not exist: \
                 {}'.format(invalid_terms))
 
+        # TODO - fix warning messages for the wakes
+
+        return key_subset
+
+    def _parse_budget_xy_terms(self, budget_terms, include_wakes=False): 
+        """
+        Takes a list of budget terms, either keyed in index form (budget #, term #) or in common form (e.g. ['u_bar', 'v_bar'])
+        and returns a subset of the `keys` dictionary that matches two together. `keys` dictionary is always keyed in common form. 
+
+        budget_terms can also be a string: 'all', or 'default'. 
+
+        'default' tries to load the following: 
+            Budget 0 terms: ubar, vbar, wbar, all Reynolds stresses, and p_bar
+            Budget 1 terms: all momentum terms
+        'all' checks what budgets exist and tries to load them all. 
+
+        For more information on the bi-directional keys, see budget_key.py
+        
+        Arguments
+        ---------
+        budget_terms : list of strings or string, see above
+        include_wakes (bool) : optional, includes wake budgets if True, default False. 
+        """
+
+        # add string shortcuts here... # TODO move shortcuts to budgetkey.py? 
+        if budget_terms=='default': 
+            budget_terms = ['ubar', 'vbar', 'wbar', 
+                            'tau11', 'tau12', 'tau13', 'tau22', 'tau23', 'tau33', 
+                            'pbar']
+
+        elif budget_terms=='all': 
+            budget_terms = self.existing_terms_xy(include_wakes=include_wakes)
+            
+        elif budget_terms=='RANS': 
+            budget_terms = ['ubar', 'vbar', 'wbar', 'pbar', 'uu', 'uv', 'uw', 'vv', 'vw', 'ww', 'dpdx', 'dpdy', 'dpdz']
+
+        elif type(budget_terms)==str: 
+            warnings.warn("keyword argument budget_terms must be either 'default', 'all', 'RANS' or a list.")
+            return {}  # empty dictionary
+
+        # parse through terms: they are either 1) valid, 2) missing (but valid keys), or 3) invalid (not in BudgetIO.key)
+
+        existing_keys = self.existing_terms_xy(include_wakes=include_wakes)
+        existing_tup = [BudgetIO.key_xy[key] for key in existing_keys]  # corresponding associated tuples (#, #)
+        
+        valid_keys = [t for t in budget_terms if t in existing_keys]
+        missing_keys = [t for t in budget_terms if t not in existing_keys and t in BudgetIO.key_xy]
+        invalid_terms = [t for t in budget_terms if t not in BudgetIO.key_xy and t not in BudgetIO.key_xy.inverse]
+
+        valid_tup = [BudgetIO.key_xy[key] for key in budget_terms if BudgetIO.key_xy[key] in existing_tup]  # existing tuples
+        missing_tup = [BudgetIO.key_xy[key] for key in budget_terms if BudgetIO.key_xy[key] not in existing_tup and BudgetIO.key_xy[key] in BudgetIO.key_xy.inverse]
+
+        # now combine existing valid keys and valid tuples, removing any duplicates
+
+        valid_terms = set(valid_keys + [BudgetIO.key_xy.inverse[tup][0] for tup in valid_tup])  # combine and remove duplicates
+        missing_terms = set(missing_keys + [BudgetIO.key_xy.inverse[tup][0] for tup in missing_tup])
+
+        # find the budgets
+        budgets = []
+        [budgets.append(tup[0]) for tup in valid_tup if tup not in budgets]
+
+        # initialize key_subset nested dictionary
+        # for the xy budgets the key_subset dict is of the form:
+        # key_subset = {budget: {term: tuple}}
+        # if budget 4 is included then there is further nesting for the component eg:
+        # key_subset = {4: {component : {term: tuple}}}
+        if 4 in budgets:
+            key_subset = {4:{}}
+        else:
+            key_subset = {}
+        
+        for budget in budgets:
+            tmp_dict = {}
+            if budget != 4:
+                for key in valid_terms:
+                    if BudgetIO.key_xy[key][0] == budget and budget != 4:
+                        tmp_dict[key] = BudgetIO.key_xy[key]
+                key_subset[budget] = tmp_dict
+        
+            elif budget == 4:
+                tmp_uu_dict = {}
+                tmp_uw_dict = {}
+                tmp_vw_dict = {}
+                tmp_ww_dict = {}
+        
+                for key in valid_terms:
+                    if BudgetIO.key_xy[key][0] == 4 and BudgetIO.key_xy[key][1] >= 1 and BudgetIO.key_xy[key][1] <= 9:
+                        tmp_uu_dict[key] = BudgetIO.key_xy[key]
+                    elif BudgetIO.key_xy[key][0] == 4 and BudgetIO.key_xy[key][1] >= 10 and BudgetIO.key_xy[key][1] <= 18:
+                        tmp_uw_dict[key] = [4, BudgetIO.key_xy[key][1] - 9]
+                    elif BudgetIO.key_xy[key][0] == 4 and BudgetIO.key_xy[key][1] >= 19 and BudgetIO.key_xy[key][1] <= 27:
+                        tmp_vw_dict[key] = [4, BudgetIO.key_xy[key][1] - 18]
+                    elif BudgetIO.key_xy[key][0] == 4 and BudgetIO.key_xy[key][1] >= 28 and BudgetIO.key_xy[key][1] <= 36:
+                        tmp_ww_dict[key] = [4, BudgetIO.key_xy[key][1] - 27]
+                
+                key_subset[budget][11] = tmp_uu_dict
+                key_subset[budget][13] = tmp_uw_dict
+                key_subset[budget][23] = tmp_vw_dict
+                key_subset[budget][33] = tmp_ww_dict
+
+        '''
+        # warn the user if some requested terms did not exist
+        if len(key_subset) == 0: 
+            warnings.warn('_parse_budget_terms(): No keys being returned; none matched.')
+
+        if len(missing_terms) > 0: 
+            warnings.warn('_parse_budget_terms(): Several terms were requested but the following could not be found: \
+                {}'.format(missing_terms))
+
+        if len(invalid_terms) > 0: 
+            warnings.warn('_parse_budget_terms(): The following budget terms were requested but the following do not exist: \
+                {}'.format(invalid_terms))
+        '''
         # TODO - fix warning messages for the wakes
 
         return key_subset 
@@ -915,8 +1223,8 @@ class BudgetIO():
         else: 
             u, v = inflow.InflowParser.inflow_budgets(self) 
 
-        # return requested information 
-
+        # return requested information
+ 
         if wInflow: 
             # If this is not nominally zero, then this will need to be fixed. 
             w = np.zeros(self.zLine.shape)
@@ -1276,6 +1584,13 @@ class BudgetIO():
         """
 
         t_list = []
+
+        budget4_comp_dict = {11 : 0,
+                             22 : 10,
+                             33 : 20,
+                             13 : 30, 
+                             23 : 40}
+        
         
         # if no budget is given, look through all saved budgets
         if budget is None: 
@@ -1317,6 +1632,15 @@ class BudgetIO():
                         for name in filenames if 
                         re.findall('Run{:02d}_budget{:01d}_term(\d+).*'.format(runid, b), name)]
                 tup_list += [((b, term)) for term in set(terms)]  # these are all tuples
+
+                # reynolds stress budgets
+                if b == 4:
+                    for component in budget4_comp_dict:
+                        terms = [int(re.findall('Run{:02d}_budget{:01d}_{:01d}_term(\d+).*'.format(runid, b, component), name)[0]) + budget4_comp_dict[component]
+                                 for name in filenames if 
+                                 re.findall('Run{:02d}_budget{:01d}_{:01d}_term(\d+).*'.format(runid, b, component), name)]
+                        tup_list += [((b, term)) for term in set(terms)]  # these are all tuples
+                    
                 
                 # wake budgets: 
                 wake_budgets = (1, 2, 3)
@@ -1335,7 +1659,89 @@ class BudgetIO():
             return []
         
         return t_list
-    
+
+    def existing_terms_xy(self, budget=None, include_wakes=True): 
+        """
+        Checks file names for a particular budget and returns a list of all the existing terms.  
+
+        Arguments 
+        ---------
+        budget (integer) : optional, default None. If provided, searches a particular budget for existing terms. 
+            Otherwise, will search for all existing terms. `budget` can also be a list of integers. 
+            Budget 0: mean statistics
+            Budget 1: momentum
+            Budget 2: MKE
+            Budget 3: TKE
+            Budget 4: uiuj 
+            Budget 5: Wake deficit
+        include_wakes (bool) : Includes wakes in the returned budget terms if True, default True. 
+
+        Returns
+        -------
+        t_list (list) : list of tuples of budgets found
+
+        """
+
+        t_list = []
+        
+        # if no budget is given, look through all saved budgets
+        if budget is None: 
+            budget_list = self.existing_budgets()
+        
+        else: 
+            # convert to list if integer is given
+            if type(budget) != list: 
+                budget_list = [budget]
+            else: 
+                budget_list = budget
+
+        # find budgets matching .npz convention in write_npz()
+        if self.associate_npz: 
+            filename = self.dir_name + os.sep + self.filename_budgets
+            with np.load(filename) as npz: 
+                all_terms = npz.files
+
+            if budget is None:  # i.e. requesting all budgets
+                return all_terms  # we can stop here without sorting through each budget
+            
+            tup_list = [BudgetIO.key[t] for t in all_terms]  # list of associated tuples
+            t_list = []  # this is the list to be built and returned
+
+            for b in budget_list: 
+                t_list += [tup for tup in tup_list if tup[0] == b]
+
+        # find budgets by name matching with PadeOps output conventions
+        elif self.associate_padeops: 
+
+            filenames = os.listdir(self.dir_name)
+            runid = self.runid
+            
+            tup_list = []
+            
+            for b in budget_list:
+                if b == 0:
+                    terms = np.arange(1,22,1)
+                elif b == 1:
+                    terms = np.arange(1,15,1)
+                elif b == 2:
+                    terms = np.arange(1,8,1)
+                elif b == 3:
+                    terms = np.arange(1,9,1)
+                elif b == 4:
+                    terms = np.arange(1,37,1) # TODO this assumes that all 4 components of the Rij tensor are present
+                else:
+                    continue
+                
+                tup_list += [((b, term)) for term in set(terms)]  # these are all tuples
+                
+            # convert tuples to keys
+            t_list = [BudgetIO.key_xy.inverse[key][0] for key in tup_list]
+        
+        else: 
+            warnings.warn('existing_terms(): No terms found for budget ' + str(budget))
+            return []
+        
+        return t_list
 
     def Read_x_slice(self, xid, label_list=['u'], tidx_list=[]):
         """
@@ -1501,6 +1907,496 @@ class BudgetIO():
 
         return power/pnormfact  # this is an array
 
+    #### Functions for plotting budgets ####
+
+    # production      - blues
+    # transport       - reds
+    # redistributions - yellows
+    # dissipation     - purples
+    # coriolis        - greens
+    
+    budget_colors = {"shear_production": "tab:blue",
+                     "buoyancy" : "tab:gray",
+                     "AD" : "tab:cyan",
+                     "adv" : "tab:orange", #
+                     "p_transport" : "tab:purple",  #
+                     "SGS_transport" : "tab:brown",   #
+                     "turb_transport" : "tab:green", #
+                     "p_strain" : "tab:red", #
+                     "dissipation" : "tab:pink", #
+                     "coriolis" : 'tab:olive'} #
+    '''
+    {"shear_production": "#7e82ed", #
+                     "buoyancy" : "#0b5394",
+                     "AD" : "#1e90ff",
+                     "adv" : "gray", #
+                     "p_transport" : "#439a1d",  #
+                     "SGS_transport" : "#7926c7",   #
+                     "turb_transport" : "#f01094", #
+                     "p_strain" : "#ffae1d", #
+                     "dissipation" : "red", #
+                     "coriolis" : '#42b79b'} #
+    '''
+    def plot_budget_momentum(self, component=None, coords=None):
+        '''
+        Plots the mean momentum budget for a given component
+        
+        Arguments
+        ---------
+        component (int) : vector component of the mean momentum budget to plot
+                          1 - streamwise (x)
+                          2 - lateral    (y)
+                          3 - vertical   (w)
+
+        Returns
+        -------
+        fig : figure object 
+        ax : axes object
+        '''
+
+        if component is None:
+            # default to the streamwise mean momentum budget
+            component = 1
+        if component == 1:
+            comp_str = ['u', 'x']
+        elif component == 2:
+            comp_str = ['v', 'y']
+        elif component == 3:
+            comp_str = ['w', 'z']
+        else:
+            print("Please enter a valid component number. Valid options are 1, 2, 3, or None (defaults to 1).")
+            return None
+
+        if coords is None:
+            coords = [(0,len(self.xLine)-1), (0, len(self.yLine)-1), (0, len(self.zLine)-1)]
+        
+        keys = [key for key in budgetkey.get_key() if budgetkey.get_key()[key][0] == 1]
+
+        keys = [key for key in keys if comp_str[0] in key or comp_str[1] in key]
+
+        key_labels = budgetkey.key_labels()
+
+        fig, ax = plt.subplots()
+
+        residual = 0
+        
+        for key in keys:
+            ax.plot(np.mean(np.mean(self.budget[key][slice(*coords[0]), slice(*coords[1]), slice(*coords[2])], axis=1), axis=0), 
+                self.zLine, label=key_labels[key])
+            residual += self.budget[key]
+
+        ax.plot(np.mean(np.mean(residual[slice(*coords[0]), slice(*coords[1]), slice(*coords[2])], axis=1), axis=0), 
+                self.zLine, label='Residual', linestyle='--', color='black')
+
+        ax.set_ylabel('$z/L$')
+            
+        return fig, ax
+
+    def plot_budget_tke(self, fig=None, ax=None, linestyle=None, alpha=None, coords=None):
+        '''
+        Plots the tke budget
+        
+        Arguments
+        ---------
+        
+        Returns
+        -------
+        fig : figure object 
+        ax : axes object
+        '''
+        
+        keys = [key for key in budgetkey.get_key() if budgetkey.get_key()[key][0] == 3]
+        key_labels = budgetkey.key_labels()
+
+        if coords is None:
+            coords = [(0,len(self.xLine)-1), (0, len(self.yLine)-1), (0, len(self.zLine)-1)]
+
+        if not linestyle:
+            linestyle = '-'
+        if not alpha:
+            alpha = 1
+
+        if not ax and not fig:
+            fig, ax = plt.subplots()
+
+        residual = 0
+        
+        for key in keys:
+            ax.plot(np.mean(np.mean(self.budget[key][slice(*coords[0]), slice(*coords[1]), slice(*coords[2])], axis=1), axis=0), 
+                self.zLine, label=key,  color = self.budget_colors[key.replace("TKE_", "")], 
+                linestyle=linestyle, alpha=alpha) 
+            residual += self.budget[key]
+
+        ax.plot(np.mean(np.mean(residual[slice(*coords[0]), slice(*coords[1]), slice(*coords[2])], axis=1), axis=0), 
+            self.zLine, label='Residual', linestyle='--', color='black')
+
+        ax.set_ylabel('$z/L$')
+            
+        return fig, ax
+
+    def plot_budget_mke(self, coords=None):
+        '''
+        Plots the tke budget
+        
+        Arguments
+        ---------
+        
+        Returns
+        -------
+        fig : figure object 
+        ax : axes object
+        '''
+        
+        if coords is None:
+            coords = [(0,len(self.xLine)-1), (0, len(self.yLine)-1), (0, len(self.zLine)-1)]
+
+
+        keys = [key for key in budgetkey.get_key() if budgetkey.get_key()[key][0] == 2]
+        key_labels = budgetkey.key_labels()
+
+        fig, ax = plt.subplots()
+
+        residual = 0
+        
+        for key in keys:
+            ax.plot(np.mean(np.mean(self.budget[key][slice(*coords[0]), slice(*coords[1]), slice(*coords[2])], axis=1), axis=0), self.zLine, label=key)
+            residual += self.budget[key]
+
+        ax.plot(np.mean(np.mean(residual[slice(*coords[0]), slice(*coords[1]), slice(*coords[2])], axis=1), axis=0), 
+            self.zLine, label='Residual', linestyle='--', color='black')
+
+        ax.set_ylabel('$z/L$')
+            
+        return fig, ax
+
+    def plot_budget_uiuj(self, component, fig=None, ax=None, linestyle=None, alpha=None, coords=None):
+        '''
+        Plots the tke budget
+        
+        Arguments
+        ---------
+        
+        Returns
+        -------
+        fig : figure object 
+        ax : axes object
+        '''
+
+        if coords is None:
+            coords = [(0,len(self.xLine)-1), (0, len(self.yLine)-1), (0, len(self.zLine)-1)]
+
+
+        comp_dict = {11 : [1, 10],
+                     22 : [11, 20],
+                     33 : [21, 30],
+                     13 : [31, 40],
+                     23 : [41, 50]}
+
+        comp_str_dict = {11 : 'uu',
+                         22 : 'vv',
+                         33 : 'ww',
+                         13 : 'uw',
+                         23 : 'vw'}
+
+        
+        if not linestyle:
+            linestyle = '-'
+
+        if not alpha:
+            alpha = 1
+
+        keys = [key for key in budgetkey.get_key() if budgetkey.get_key()[key][0] == 4 and budgetkey.get_key()[key][1] in range(comp_dict[component][0], comp_dict[component][1])]
+        
+        if not ax and not fig:
+            fig, ax = plt.subplots()
+
+        residual = 0
+        
+        for key in keys:
+            ax.plot(np.mean(np.mean(self.budget[key][slice(*coords[0]), slice(*coords[1]), slice(*coords[2])], axis=1), axis=0), 
+                self.zLine, label=key, color = self.budget_colors[key.replace(comp_str_dict[component] + "_", "")], 
+                linestyle=linestyle, alpha=alpha)
+            residual += self.budget[key]
+
+        ax.plot(np.mean(np.mean(residual[slice(*coords[0]), slice(*coords[1]), slice(*coords[2])], axis=1), axis=0), 
+            self.zLine, label='Residual', linestyle=linestyle, color='black')
+
+        ax.set_ylabel('$z/L$')
+            
+        return fig, ax
+
+    
+    def plot_budget_xy_momentum(self, component=None):
+        '''
+        Plots the mean momentum budget for a given component
+        
+        Arguments
+        ---------
+        component (int) : vector component of the mean momentum budget to plot
+                          1 - streamwise (x)
+                          2 - lateral    (y)
+                          3 - vertical   (w)
+
+        Returns
+        -------
+        fig : figure object 
+        ax : axes object
+        '''
+
+        if component is None:
+            # default to the streamwise mean momentum budget
+            component = 1
+
+        if component == 1:
+            comp_str = ['u', 'x']
+        elif component == 2:
+            comp_str = ['v', 'y']
+        elif component == 3:
+            comp_str = ['w', 'z']
+        else:
+            print("Please enter a valid component number. Valid options are 1, 2, 3, or None (defaults to 1).")
+            return None
+        
+        keys = [key for key in budgetkey.get_key_xy() if budgetkey.get_key_xy()[key][0] == 1]
+
+        keys = [key for key in keys if comp_str[0] in key or comp_str[1] in key]
+        
+        fig, ax = plt.subplots()
+
+        residual = 0
+        
+        for key in keys:
+            ax.plot(self.budget_xy[key], self.zLine, label = key)
+            residual += self.budget_xy[key]
+
+        ax.plot(residual, self.zLine, label='Residual', linestyle='--', color='black')
+
+        ax.set_ylabel('$z/L$')
+            
+        return fig, ax
+    
+
+    def plot_budget_xy_tke(self, fig=None, ax=None, linestyle=None, alpha=None):
+        '''
+        Plots the tke budget
+        
+        Arguments
+        ---------
+        
+        Returns
+        -------
+        fig : figure object 
+        ax : axes object
+        '''
+
+        if not linestyle:
+            linestyle = '-'
+        if not alpha:
+            alpha = 1
+        
+        keys = [key for key in budgetkey.get_key_xy() if budgetkey.get_key_xy()[key][0] == 3]
+        key_labels = budgetkey.key_labels()
+
+        if not ax and not fig:
+            fig, ax = plt.subplots()
+
+        residual = 0
+        
+        for key in keys:
+            ax.plot(self.budget_xy[key], self.zLine, label=key,color = self.budget_colors[key.replace("TKE_", "")], 
+                    linestyle=linestyle, alpha=alpha)
+            residual += self.budget_xy[key]
+
+        ax.plot(residual, self.zLine, label='Residual', linestyle='--', color='black')
+
+        ax.set_ylabel('$z/L$')
+            
+        return fig, ax
+
+
+    def plot_budget_xy_mke(self):
+        '''
+        Plots the tke budget
+        
+        Arguments
+        ---------
+        
+        Returns
+        -------
+        fig : figure object 
+        ax : axes object
+        '''
+        
+        keys = [key for key in budgetkey.get_key_xy() if budgetkey.get_key_xy()[key][0] == 2]
+        key_labels = budgetkey.key_labels()
+
+        fig, ax = plt.subplots()
+
+        residual = 0
+        
+        for key in keys:
+            ax.plot(self.budget_xy[key], self.zLine, label=key)
+            residual += self.budget_xy[key]
+
+        ax.plot(residual, self.zLine, label='Residual', linestyle='--', color='black')
+
+        ax.set_ylabel('$z/L$')
+            
+        return fig, ax
+
+    
+    def plot_budget_xy_uu(self, fig=None, ax=None, linestyle=None, alpha=None):
+        '''
+        Plots the streamwise variance <uu> budget
+        
+        Arguments
+        ---------
+        
+        Returns
+        -------
+        fig : figure object 
+        ax : axes object
+        '''
+
+        if not linestyle:
+            linestyle = '-'
+
+        if not alpha:
+            alpha = 1
+        
+        keys = [key for key in budgetkey.get_key_xy() if budgetkey.get_key_xy()[key][0] == 4 and budgetkey.get_key_xy()[key][1] >= 1 and budgetkey.get_key_xy()[key][1] <= 9]
+        key_labels = budgetkey.key_labels()
+
+        if not ax and not fig:
+            fig, ax = plt.subplots()
+
+        residual = 0
+        
+        for key in keys:
+            ax.plot(self.budget_xy[key], self.zLine, label = key, color = self.budget_colors[key.replace("uu_", "")], linestyle=linestyle, alpha=alpha)
+            residual += self.budget_xy[key]
+
+        ax.plot(residual, self.zLine, label='Residual', linestyle='--', color='black')
+
+        ax.set_ylabel('$z/L$')
+            
+        return fig, ax
+
+
+    def plot_budget_xy_uw(self, fig=None, ax=None, linestyle=None, alpha=None):
+        '''
+        Plots the streamwise variance <uu> budget
+        
+        Arguments
+        ---------
+        
+        Returns
+        -------
+        fig : figure object 
+        ax : axes object
+        '''
+        
+        if not linestyle:
+            linestyle = '-'
+
+        if not alpha:
+            alpha = 1
+
+        keys = [key for key in budgetkey.get_key_xy() if budgetkey.get_key_xy()[key][0] == 4 and budgetkey.get_key_xy()[key][1] >= 10 and budgetkey.get_key_xy()[key][1] <= 18]
+        key_labels = budgetkey.key_labels()
+
+        if not ax and not fig:
+            fig, ax = plt.subplots()
+
+        residual = 0
+        
+        for key in keys:
+            ax.plot(self.budget_xy[key], self.zLine, label = key, color = self.budget_colors[key.replace("uw_", "")], linestyle=linestyle, alpha=alpha)
+            residual += self.budget_xy[key]
+
+        ax.plot(residual, self.zLine, label='Residual', linestyle='--', color='black')
+
+        ax.set_ylabel('$z/L$')
+            
+        return fig, ax
+
+
+    def plot_budget_xy_vw(self, fig=None, ax=None, linestyle=None, alpha=None):
+        '''
+        Plots the streamwise variance <uu> budget
+        
+        Arguments
+        ---------
+        
+        Returns
+        -------
+        fig : figure object 
+        ax : axes object
+        '''
+
+        
+        if not linestyle:
+            linestyle = '-'
+
+        if not alpha:
+            alpha = 1
+        
+        keys = [key for key in budgetkey.get_key_xy() if budgetkey.get_key_xy()[key][0] == 4 and budgetkey.get_key_xy()[key][1] >= 19 and budgetkey.get_key_xy()[key][1] <= 27]
+        key_labels = budgetkey.key_labels()
+
+        if not ax and not fig:
+            fig, ax = plt.subplots()
+
+        residual = 0
+        
+        for key in keys:
+            ax.plot(self.budget_xy[key], self.zLine, label = key, color = self.budget_colors[key.replace("vw_", "")], linestyle=linestyle, alpha=alpha)
+            residual += self.budget_xy[key]
+
+        ax.plot(residual, self.zLine, label='Residual', linestyle='--', color='black')
+
+        ax.set_ylabel('$z/L$')
+            
+        return fig, ax
+
+
+    def plot_budget_xy_ww(self, fig=None, ax=None, linestyle=None, alpha=None):
+        '''
+        Plots the streamwise variance <uu> budget
+        
+        Arguments
+        ---------
+        
+        Returns
+        -------
+        fig : figure object 
+        ax : axes object
+        '''
+        
+        
+        if not linestyle:
+            linestyle = '-'
+
+        if not alpha:
+            alpha = 1
+
+        keys = [key for key in budgetkey.get_key_xy() if budgetkey.get_key_xy()[key][0] == 4 and budgetkey.get_key_xy()[key][1] >= 28 and budgetkey.get_key_xy()[key][1] <= 36]
+        key_labels = budgetkey.key_labels()
+
+        if not ax and not fig:
+            fig, ax = plt.subplots()
+
+        residual = 0
+        
+        for key in keys:
+            ax.plot(self.budget_xy[key], self.zLine, label = key, color = self.budget_colors[key.replace("ww_", "")], linestyle=linestyle, alpha=alpha)
+            residual += self.budget_xy[key]
+
+        ax.plot(residual, self.zLine, label='Residual', linestyle='--', color='black')
+
+        ax.set_ylabel('$z/L$')
+            
+        return fig, ax
 
 if __name__ == "__main__": 
     """
