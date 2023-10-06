@@ -32,12 +32,12 @@ pip install . -e
 
 The module can be imported into a Python script with: 
 ```
-import padeopsIO as pio
+import padeopsio as pio
 ```
 
 ## Usage
 
-PadeOpsIO is used for visualization of and analysis for output data from PadeOps. For more, see the [quick start](https://github.com/kirbyh/PadeOpsIO/blob/main/padeopsIO/padeopsIO_quickstart.ipynb). 
+PadeOpsIO is used for visualization of and analysis for output data from PadeOps. For more, see the [quick start](https://github.com/kirbyh/PadeOpsIO/blob/main/padeopsio/padeopsio_quickstart.ipynb). 
 
 Data can be instanteous data: 
 

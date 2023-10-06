@@ -3,8 +3,8 @@ import os
 import re
 import glob
 
-from padeopsIO.io_utils import key_search_r
-from padeopsIO.wake_utils import get_xids
+from padeopsio.io_utils import key_search_r
+from padeopsio.wake_utils import get_xids
 
 
 def get_correction(CT, fwidth, D): 

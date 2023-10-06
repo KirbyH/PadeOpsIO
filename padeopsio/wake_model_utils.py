@@ -1,5 +1,5 @@
 # Additional wake functions (some work-in-progress)
-# Possible usage: from padeopsIO.wake_model_utils import *
+# Possible usage: from padeopsio.wake_model_utils import *
 
 import numpy as np
 import os
@@ -7,7 +7,7 @@ from numpy.linalg import lstsq
 from scipy.optimize import curve_fit
 from scipy import optimize
 
-from padeopsIO import ActuatorDisk
+from padeopsio import ActuatorDisk
 
 
 # ===================== WAKE FITTING ==========================

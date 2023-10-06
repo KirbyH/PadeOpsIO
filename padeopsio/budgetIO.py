@@ -5,12 +5,12 @@ import warnings
 import glob
 from scipy.io import savemat, loadmat
 
-import padeopsIO.budgetkey as budgetkey  # defines key pairing
-import padeopsIO.inflow as inflow  # interface to retrieve inflow profiles
-import padeopsIO.turbineArray as turbineArray  # reads in a turbine array similar to turbineMod.F90
-from padeopsIO.io_utils import structure_to_dict, key_search_r
-from padeopsIO.wake_utils import *
-from padeopsIO.nml_utils import parser
+import padeopsio.budgetkey as budgetkey  # defines key pairing
+import padeopsio.inflow as inflow  # interface to retrieve inflow profiles
+import padeopsio.turbineArray as turbineArray  # reads in a turbine array similar to turbineMod.F90
+from padeopsio.io_utils import structure_to_dict, key_search_r
+from padeopsio.wake_utils import *
+from padeopsio.nml_utils import parser
 
 
 class BudgetIO(): 
@@ -152,9 +152,14 @@ class BudgetIO():
             if self.verbose: 
                 print('_init_padeops(): Initializing wind turbine array object')
                 
-            turb_dir = self.input_nml['windturbines']['turbinfodir']
             num_turbines = self.input_nml['windturbines']['num_turbines']
             ADM_type = self.input_nml['windturbines']['adm_type']
+            turb_dir = self.input_nml['windturbines']['turbinfodir']
+            if not os.path.exists(turb_dir): 
+                if self.verbose: 
+                    print('_init_padeops(): original turbine directory does not exist!')
+                turb_dir = os.path.join(self.dir_name, 'turb')  # try this...? 
+
             try: 
                 self.turbineArray = turbineArray.TurbineArray(turb_dir, 
                                                               num_turbines=num_turbines, 
@@ -1789,4 +1794,4 @@ if __name__ == "__main__":
     """
     TODO - add unit tests to class
     """
-    print("padeopsIO: No unit tests included yet. ")
+    print("padeopsio: No unit tests included yet. ")

@@ -5,7 +5,7 @@
 import numpy as np
 import csv
 import os
-import padeopsIO
+import padeopsio
 from numpy.linalg import lstsq
 from scipy.optimize import curve_fit
 
@@ -916,11 +916,11 @@ def compute_vort_budget(sl_dict, case=None, Ro=None, Ro_f=None, lat=45, Fr=None,
     rs_ijkm = np.zeros((nx, ny, nz, 3, 3, 3, 3))  # also 7D
 
     if case is not None: 
-        Ro_LES = padeopsIO.key_search_r(case.input_nml, 'ro')
-        lat = padeopsIO.key_search_r(case.input_nml, 'latitude') * np.pi/180
+        Ro_LES = padeopsio.key_search_r(case.input_nml, 'ro')
+        lat = padeopsio.key_search_r(case.input_nml, 'latitude') * np.pi/180
         Ro = Ro_LES/(2*np.sin(lat))  # we need this normalization
-        Fr = padeopsIO.key_search_r(case.input_nml, 'fr')
-        theta0 = padeopsIO.key_search_r(case.input_nml, 'tref')
+        Fr = padeopsio.key_search_r(case.input_nml, 'fr')
+        theta0 = padeopsio.key_search_r(case.input_nml, 'tref')
         if theta0 is None: 
             theta0 = 1  # hotfix for if flow is not stratified
     elif Ro_f is not None: 

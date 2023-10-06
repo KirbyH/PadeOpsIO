@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "padeopsIO"
+name = "padeopsio"
 version = "0.1.0"
 description = ""
 authors = ["Kirby <kirby.heck@gmail.com>"]

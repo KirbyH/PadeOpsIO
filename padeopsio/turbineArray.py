@@ -1,8 +1,8 @@
 import os
 import warnings
 
-from padeopsIO.turbine import Turbine
-from padeopsIO.nml_utils import parser
+from padeopsio.turbine import Turbine
+from padeopsio.nml_utils import parser
     
 class TurbineArray(): 
     """
@@ -49,7 +49,6 @@ class TurbineArray():
             init_ls = []
                 
         if turb_dir is not None: 
-            print('DEBUG: turbine dir is not None')
             # glean namelist inputs from the turbine directory
             if len(init_ls) == 0: 
                 # begin reading in turbines

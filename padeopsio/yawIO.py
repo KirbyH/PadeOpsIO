@@ -4,7 +4,7 @@ import re
 import warnings
 import glob
 
-import padeopsIO.budgetIO as pio
+import padeopsio.budgetIO as pio
 
 class YawIO(pio.BudgetIO): 
     """

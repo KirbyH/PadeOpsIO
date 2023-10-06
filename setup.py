@@ -13,14 +13,14 @@ readme = ''
 
 setup(
     long_description=readme,
-    name='padeopsIO',
+    name='padeopsio',
     version='0.1.0',
     description='Input/output module for reading, saving, and plotting output data',
     python_requires='>=3.7',
     author='Kirby',
     author_email='kirby.heck@gmail.com',
     license='MIT',
-    packages=['padeopsIO'],
+    packages=['padeopsio'],
     package_dir={"": "."},
     package_data={},
     install_requires=[],

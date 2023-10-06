@@ -4,7 +4,7 @@
 import csv
 import re
 import os
-import padeopsIO
+import padeopsio
 from numpy import array, ndarray
 
 
@@ -31,7 +31,7 @@ def read_list(dir_name):
     run_list = []
 
     for run in runs: 
-        run_list.append(padeopsIO.BudgetIO(run[0], padeops=True, verbose=False))
+        run_list.append(padeopsio.BudgetIO(run[0], padeops=True, verbose=False))
         
     return run_list
 

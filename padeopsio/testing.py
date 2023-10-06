@@ -3,7 +3,7 @@ import sys
 import numpy as np
 
 # sys.path.append(r'./padeops_io/')  # why is this our cwd? 
-import padeopsIO as pio
+import padeopsio as pio
 
 # testIO = BudgetIO('some_dir', verbose=False)
 testIO = pio.BudgetIO(r'./test_data', verbose=True)
